@@ -1,8 +1,8 @@
 import base64
 import gzip
 import hashlib
+import hmac
 import json
-import math
 import time
 from datetime import datetime
 from .common import InfoExtractor, ExtractorError
@@ -150,7 +150,8 @@ class SklandArticleIE(InfoExtractor):
             "vName": "1.0.0"
         }, separators=(',', ':'))
 
-        sign = get_sign_result(s, token)   
+        hex_s = hmac.new(token.encode(), s.encode(), hashlib.sha256).hexdigest()
+        sign = hashlib.md5(hex_s.encode()).hexdigest() 
 
         headers = {
             'referer': 'https://www.skland.com/',
@@ -161,7 +162,7 @@ class SklandArticleIE(InfoExtractor):
             'sign': sign, 
             'origin': 'https://www.skland.com/',
         }
-        item = self._download_json('https://zonai.skland.com/web/v1/' + path, id, headers=headers)
+        item = self._download_json('https://zonai.skland.com/web/v1' + path, id, headers=headers)
 
         return item
 
@@ -229,107 +230,14 @@ class SklandArticleIE(InfoExtractor):
         res = base64.b64encode(gzip.compress(json.dumps(res, separators=(',', ':')).encode()))
         uid = hashlib.md5(uuid.encode()).hexdigest()[:16]
 
-        res = _aes_cbc_encrypt(res.decode(), stoa(uid)[0])
+        res = _aes_cbc_encrypt(res.decode(), uid)
 
         return res
 
 
-def get_sign_result(e: str, t: str):
-    t, _ = stoa(t)
-    e, n = stoa(e)
-
-    blocksize = 16
-
-    ikey = xor(t, 909522486, blocksize)
-    okey = xor(t, 1549556828, blocksize)
-
-    hash = [1779033703, -1150833019, 1013904242, -1521486534, 1359893119, -1694144372, 528734635, 1541459225]
-    hash = sha_cipher(ikey, hash, 4 * blocksize)
-    data, n = _process_SHA_res(e, n, 4 * blocksize + n)
-    hash = sha_cipher(data, hash, n)
-    data, n = _process_SHA_res(okey + hash, 4 * blocksize + 32, 4 * blocksize + 32)
-    
-    hash = [1779033703, -1150833019, 1013904242, -1521486534, 1359893119, -1694144372, 528734635, 1541459225]
-    hash = sha_cipher(data, hash, n)
-    hash = [x if x < 2147483648 else x - 4294967296 for x in hash]
-    hash, n = stoa(atos(hash))
-    data, n = _process_MD5_res(hash, n, n)
-
-    hash = [1732584193, 4023233417, 2562383102, 271733878]
-    hash = md5_cipher(data, hash, n)
-    hash = [16711935 & (x << 8 | x >> 24) | 4278255360 & (x << 24 | x >> 8) for x in hash]
-
-    return atos(hash, 16)
-
-
-def atos(word, sign=32):
-    n = []
-
-    for i in range(sign):
-        o = (word[i >> 2] >> (24 - (i % 4) * 8)) & 0xFF
-        n.append(format(o >> 4, "x"))
-        n.append(format(o & 0x0F, "x"))
-
-    return "".join(n)
-
-
-def stoa(string):
-    string = string.encode('utf-8').decode('latin-1')
-    r = []
-
-    for n in range(len(string)):
-        i = n >> 2
-        if i >= len(r):
-            r.append(0)
-
-        r[i] |= (ord(string[n]) & 0xFF) << (24 - (n % 4) * 8)
-        
-    return r, len(string)
-
-
-def _process_SHA_res(word, sign, nb):
-    n = 8 * nb
-    i = 8 * sign
-
-    idx1 = 14 + ((i + 64) >> 9 << 4)
-    idx2 = 15 + ((i + 64) >> 9 << 4)
-
-    word += [0] * max(0, max((i >> 5), idx1, idx2) - len(word) + 1)
-   
-    word[i >> 5] |= 128 << (24 - i % 32)
-    word[idx1] = math.floor(n / 4294967296)
-    word[idx2] = n
-
-    return word, 4 * len(word)
-
-
-def _process_MD5_res(word, sign, nb):
-    n = 8 * nb
-    i = 8 * sign
-
-    o = math.floor(n / 4294967296)
-
-    idx1 = 15 + ((i + 64) >> 9 << 4)
-    idx2 = 14 + ((i + 64) >> 9 << 4)
-    
-    word += [0] * max(0, max((i >> 5), idx1, idx2) - len(word) + 1)
-   
-    word[i >> 5] |= 128 << (24 - i % 32)
-    word[idx1] = 16711935 & (o << 8 | o >> 24) | 4278255360 & (o << 24 | o >> 8)
-    word[idx2] = 16711935 & (n << 8 | n >> 24) | 4278255360 & (n << 24 | n >> 8)
-
-    return word, 4 * (len(word) + 1)
-
-
-def xor(e, t, l):
-    e = e + [0] * max(0, l - len(e))
-    for i in range(l):
-        e[i] ^= t
-    return e
-
-
-def _aes_cbc_encrypt(data: str, key: list[4]) -> str:
-    RBOX = [0, 1, 2, 4, 8, 16, 32, 64, 128, 27, 54]
+def _aes_cbc_encrypt(data: str, key: str) -> str:
+    #  they use abnormal rcon 
+    RCON = [0, 1, 2, 4, 8, 16, 32, 64, 128, 27, 54]
     SBOX = (
         0x63, 0x7C, 0x77, 0x7B, 0xF2, 0x6B, 0x6F, 0xC5, 0x30, 0x01, 0x67, 0x2B, 0xFE, 0xD7, 0xAB, 0x76,
         0xCA, 0x82, 0xC9, 0x7D, 0xFA, 0x59, 0x47, 0xF0, 0xAD, 0xD4, 0xA2, 0xAF, 0x9C, 0xA4, 0x72, 0xC0,
@@ -365,14 +273,27 @@ def _aes_cbc_encrypt(data: str, key: list[4]) -> str:
                     SBOX[block >> 8 & 0xff] << 8 | 
                     SBOX[0xff & block]
                 )
-                block ^= RBOX[n // 4] << 24
+                block ^= RCON[n // 4] << 24
             res[n] = block ^ res[n - 4]
 
         return res
     
-    data, _ = stoa(data)
+    def stoa(s):
+        s = s.encode('utf-8').decode('latin-1')
+        r = []
+
+        for n in range(len(s)):
+            i = n >> 2
+            if i >= len(r):
+                r.append(0)
+
+            r[i] |= (ord(s[n]) & 0xFF) << (24 - (n % 4) * 8)
+            
+        return r, len(s)
+    
+    data = stoa(data)[0]
     data += [0] * (4 - (len(data) % 4 or 4))
-    key = key_expansion(key)
+    key = key_expansion(stoa(key)[0])
 
     result = ""
 
@@ -399,164 +320,3 @@ def _aes_cbc_encrypt(data: str, key: list[4]) -> str:
             result += f'{num:08x}'
    
     return result
-
-
-def md5_cipher(word, hash, sign):
-    MASK32 = 0xFFFFFFFF
-
-    def rotl(x, n):
-        x &= MASK32
-        return ((x << n) | (x >> (32 - n))) & MASK32
-
-    def u(a, b, c, d, x, s, t):
-        return (b + rotl((a + ((b & c) | (~b & d)) + x + t) & MASK32, s)) & MASK32
-
-    def f(a, b, c, d, x, s, t):
-        return (b + rotl((a + ((b & d) | (c & ~d)) + x + t) & MASK32, s)) & MASK32
-
-    def l(a, b, c, d, x, s, t):
-        return (b + rotl((a + (b ^ c ^ d) + x + t) & MASK32, s)) & MASK32
-
-    def h(a, b, c, d, x, s, t):
-        return (b + rotl((a + (c ^ (b | ~d)) + x + t) & MASK32, s)) & MASK32
-
-    def process_block(t, e, hash_words, c):
-        for r in range(16):
-            n = e + r
-            i = t[n] & MASK32
-            t[n] = ((i << 8 | i >> 24) & 0x00FF00FF) | ((i << 24 | i >> 8) & 0xFF00FF00)
-           
-
-        s, a, p, v, d, g, y, b, m, w, x, _, S, k, O, E = t[e:e + 16]
-
-        A, R, B, P = hash_words
-
-        A = u(A, R, B, P, s, 7, c[0]); P = u(P, A, R, B, a, 12, c[1])
-        B = u(B, P, A, R, p, 17, c[2]); R = u(R, B, P, A, v, 22, c[3])
-        A = u(A, R, B, P, d, 7, c[4]); P = u(P, A, R, B, g, 12, c[5])
-        B = u(B, P, A, R, y, 17, c[6]); R = u(R, B, P, A, b, 22, c[7])
-        A = u(A, R, B, P, m, 7, c[8]); P = u(P, A, R, B, w, 12, c[9])
-        B = u(B, P, A, R, x, 17, c[10]); R = u(R, B, P, A, _, 22, c[11])
-        A = u(A, R, B, P, S, 7, c[12]); P = u(P, A, R, B, k, 12, c[13])
-        B = u(B, P, A, R, O, 17, c[14]); R = u(R, B, P, A, E, 22, c[15])
-
-        A = f(A, R, B, P, a, 5, c[16]); P = f(P, A, R, B, y, 9, c[17])
-        B = f(B, P, A, R, _, 14, c[18]); R = f(R, B, P, A, s, 20, c[19])
-        A = f(A, R, B, P, g, 5, c[20]); P = f(P, A, R, B, x, 9, c[21])
-        B = f(B, P, A, R, E, 14, c[22]); R = f(R, B, P, A, d, 20, c[23])
-        A = f(A, R, B, P, w, 5, c[24]); P = f(P, A, R, B, O, 9, c[25])
-        B = f(B, P, A, R, v, 14, c[26]); R = f(R, B, P, A, m, 20, c[27])
-        A = f(A, R, B, P, k, 5, c[28]); P = f(P, A, R, B, p, 9, c[29])
-        B = f(B, P, A, R, b, 14, c[30]); R = f(R, B, P, A, S, 20, c[31])
-
-        A = l(A, R, B, P, g, 4, c[32]); P = l(P, A, R, B, m, 11, c[33])
-        B = l(B, P, A, R, _, 16, c[34]); R = l(R, B, P, A, O, 23, c[35])
-        A = l(A, R, B, P, a, 4, c[36]); P = l(P, A, R, B, d, 11, c[37])
-        B = l(B, P, A, R, b, 16, c[38]); R = l(R, B, P, A, x, 23, c[39])
-        A = l(A, R, B, P, k, 4, c[40]); P = l(P, A, R, B, s, 11, c[41])
-        B = l(B, P, A, R, v, 16, c[42]); R = l(R, B, P, A, y, 23, c[43])
-        A = l(A, R, B, P, w, 4, c[44]); P = l(P, A, R, B, S, 11, c[45])
-        B = l(B, P, A, R, E, 16, c[46]); R = l(R, B, P, A, p, 23, c[47])
-
-        A = h(A, R, B, P, s, 6, c[48]); P = h(P, A, R, B, b, 10, c[49])
-        B = h(B, P, A, R, O, 15, c[50]); R = h(R, B, P, A, g, 21, c[51])
-        A = h(A, R, B, P, S, 6, c[52]); P = h(P, A, R, B, v, 10, c[53])
-        B = h(B, P, A, R, x, 15, c[54]); R = h(R, B, P, A, a, 21, c[55])
-        A = h(A, R, B, P, m, 6, c[56]); P = h(P, A, R, B, E, 10, c[57])
-        B = h(B, P, A, R, y, 15, c[58]); R = h(R, B, P, A, k, 21, c[59])
-        A = h(A, R, B, P, d, 6, c[60]); P = h(P, A, R, B, _, 10, c[61])
-        B = h(B, P, A, R, p, 15, c[62]); R = h(R, B, P, A, w, 21, c[63])
-
-        hash_words[0] = (hash_words[0] + A) & MASK32
-        hash_words[1] = (hash_words[1] + R) & MASK32
-        hash_words[2] = (hash_words[2] + B) & MASK32
-        hash_words[3] = (hash_words[3] + P) & MASK32
-
-        return hash_words
-
-
-    c = [
-        0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
-        0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
-        0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
-        0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
-        0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
-        0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
-        0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
-        0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391,
-    ]
-
-    blocksize = 16
-    limit = math.floor(sign / (4 * blocksize)) * blocksize
-    for i in range(0, limit, blocksize):
-        hash = process_block(word, i, hash, c)
-
-    return hash
-
-
-def sha_cipher(word, hash, sign):
-    MASK32 = 0xFFFFFFFF
-
-    def rotr(x, n):
-            return ((x >> n) | (x << (32 - n))) & MASK32
-    
-    def process_block(array, idx, r, K):
-        n, i, o, s, c, f, l, h = r
-        u = [0] * 64
-
-        for p in range(64):
-            if p < 16:
-                u[p] = array[idx + p] & MASK32
-            else:
-                s0 = rotr(u[p-15], 7) ^ rotr(u[p-15], 18) ^ (u[p-15] >> 3)
-                s1 = rotr(u[p-2], 17) ^ rotr(u[p-2], 19) ^ (u[p-2] >> 10)
-                u[p] = (u[p-16] + s0 + u[p-7] + s1) & MASK32
-
-            ch  = (c & f) ^ (~c & l)
-            maj = (n & i) ^ (n & o) ^ (i & o)
-
-            S1 = rotr(c, 6) ^ rotr(c, 11) ^ rotr(c, 25)
-            S0 = rotr(n, 2) ^ rotr(n, 13) ^ rotr(n, 22)
-
-            T1 = (h + S1 + ch + K[p] + u[p]) & MASK32
-            T2 = (S0 + maj) & MASK32
-
-            h = l
-            l = f
-            f = c
-            c = (s + T1) & MASK32
-            s = o
-            o = i
-            i = n
-            n = (T1 + T2) & MASK32
-        
-        r[0] = (r[0] + n) & MASK32
-        r[1] = (r[1] + i) & MASK32
-        r[2] = (r[2] + o) & MASK32
-        r[3] = (r[3] + s) & MASK32
-        r[4] = (r[4] + c) & MASK32
-        r[5] = (r[5] + f) & MASK32
-        r[6] = (r[6] + l) & MASK32
-        r[7] = (r[7] + h) & MASK32
-
-        return r
-    
-
-    K = [
-        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,  
-    ]
-
-    blocksize = 16
-    limit = int(sign / (4 * blocksize)) * blocksize
-    for i in range(0, limit, blocksize):
-        hash = process_block(word, i, hash, K)
-
-    return hash
-    
